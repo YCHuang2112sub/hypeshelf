@@ -153,6 +153,48 @@ User adds a movie (mutation)
 
 This is powered by Convex's reactive query system — `useQuery` holds a persistent WebSocket and re-runs whenever the subscribed data changes.
 
+### Considerations: Database-Update-Triggered Client Refresh
+
+#### How Convex Decides to Re-render
+
+Convex tracks which tables (and which rows/indexes) each query **read** during its last execution. When a mutation writes to the database, Convex diffs the affected rows against every active query's read set. Only queries that actually touched the changed data are invalidated and re-sent to clients. Unrelated subscribers are not woken up.
+
+```
+Mutation writes recommendation row R
+  → Convex checks: which useQuery subscriptions read R?
+  → Invalidates only those subscriptions
+  → Pushes updated result to those clients via WebSocket
+  → Other queries (e.g. a query on the `users` table) are unaffected
+```
+
+#### Why `useQuery` Instead of a Server Component + Manual Refresh
+
+The home page was originally a Server Component using `fetchQuery` (a one-time HTTP fetch at render time). This approach has two problems for a live feed:
+
+| Approach | Data freshness | Mechanism |
+|---|---|---|
+| Server Component (`fetchQuery`) | Stale until page reload | One-time SSR fetch |
+| Client Component (`useQuery`) | Live — updates in ~100ms | Persistent WebSocket subscription |
+
+Converting to a Client Component with `useQuery` gives up SSR for that component but gains automatic reactivity. The tradeoff is acceptable here because the movie feed is the primary interactive surface — staleness would be visibly wrong.
+
+#### Computed Fields and Fan-out Cost
+
+`listPublic` and `listAll` both read from **two tables**: `recommendations` and `users` (to compute `isStaffPick`). This means:
+
+- A write to `recommendations` (e.g. new movie) → invalidates both queries → clients re-render
+- A write to `users` (e.g. `grantAdmin`) → also invalidates both queries → all viewers instantly see Staff Pick badges update
+
+This is intentional but has a cost: granting or revoking admin forces a re-query for every active subscriber. For HypeShelf's scale this is negligible. At larger scale, the mitigation would be to store `isStaffPick` as a denormalised field updated at write time (trading read-time computation for write-time cost).
+
+#### Optimistic Updates
+
+Convex does **not** perform automatic optimistic UI updates (showing a change before the server confirms). The mutation round-trip is fast enough (~50–150ms on a good connection) that the brief delay before the WebSocket pushes back the confirmed state is imperceptible. If sub-50ms feel were required, the dashboard's `useMutation` calls could be wrapped with local state that shows an immediate placeholder card — but this adds complexity for marginal gain.
+
+#### Subscription Cleanup
+
+`useQuery` subscriptions are automatically unsubscribed when the React component unmounts (e.g. navigating away from the page). Convex handles this via the provider's WebSocket connection lifecycle, so there is no manual cleanup required in component code.
+
 ---
 
 ## File Structure

@@ -167,6 +167,7 @@ export default function DashboardPage() {
                         placeholder="Search by username…"
                         value={userSearch}
                         onChange={(e) => setUserSearch(e.target.value)}
+                        suppressHydrationWarning
                     />
                 </div>
 
